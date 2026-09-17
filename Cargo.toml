@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/k1ndl1ng-ast",
+  "crates/k1ndl1ng-parse",
+  "crates/k1ndl1ng-norm",
+  "crates/campf1r3-core",
+  "crates/k1ndl1ng-campf1r3",
+  "crates/b3ll0ws",
+  "crates/f1r3x",
+  "crates/f1r3x-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["F1R3FLY.io"]

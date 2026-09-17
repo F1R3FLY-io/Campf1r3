@@ -1,0 +1,15 @@
+[package]
+name = "b3ll0ws"
+description = "The rho interpreter: executes K1ndl1ng normal forms against an RSpace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+k1ndl1ng-norm = { path = "../k1ndl1ng-norm" }
+campf1r3-core = { path = "../campf1r3-core" }
+k1ndl1ng-campf1r3 = { path = "../k1ndl1ng-campf1r3" }
+
+[dev-dependencies]
+k1ndl1ng-parse = { path = "../k1ndl1ng-parse" }

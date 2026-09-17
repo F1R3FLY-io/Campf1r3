@@ -1,0 +1,10 @@
+// A persistent service. The receipt stays after each comm, so every sender is
+// served; the machine re-issues the receipt because an arriving continuation
+// that reacts was never stored.
+
+new echo in {
+    for(msg <= echo){ stdout!(*msg) }
+  | echo!(Nil)
+  | echo!(@{Nil}!(Nil))
+  | echo!(@{Nil}!(Nil, Nil))
+}

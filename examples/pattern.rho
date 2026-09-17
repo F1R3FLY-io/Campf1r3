@@ -1,0 +1,11 @@
+// Pattern matching routes a message. Note the closed quote `@{Nil}` in the
+// pattern: an identifier inside a pattern that no inner scope binds is itself
+// a binder, so `for(@{d!(Nil)} <- x)` would match a send on ANY channel.
+//
+// Here the first receipt matches and the second cannot.
+
+new x in {
+    x!(@{Nil}!(Nil))
+  | for(@{ @{Nil}!(Nil) } <- x){ stdout!(Nil) }
+  | for(@{ @{Nil}!(Nil, Nil) } <- x){ stdout!(@{Nil}!(Nil)) }
+}

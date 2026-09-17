@@ -1,0 +1,10 @@
+// A join: the continuation needs a datum on both channels at once. Neither
+// half fires alone, and the store holds the first arrival until the second
+// shows up.
+
+new left, right, done in {
+    left!(Nil)
+  | right!(Nil)
+  | for(a <- left & b <- right){ done!(Nil) }
+  | for(_ <- done){ stdout!(Nil) }
+}

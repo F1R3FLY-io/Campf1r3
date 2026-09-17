@@ -1,0 +1,4 @@
+// Two `new` scopes, each with its own `x`. The names are unforgeable and
+// distinct, so nothing crosses between them: two data at rest, no comm.
+
+new x in { x!(Nil) } | new x in { x!(Nil) }

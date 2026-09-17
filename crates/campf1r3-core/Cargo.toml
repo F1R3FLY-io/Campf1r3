@@ -1,0 +1,9 @@
+[package]
+name = "campf1r3-core"
+description = "An RSpace: the store monad with joins, patterns, persistence and peeks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]

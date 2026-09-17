@@ -1,0 +1,23 @@
+[package]
+name = "f1r3x"
+description = "The rho executive: deploy, schedule, and render a rho calculus world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "f1r3x"
+path = "src/lib.rs"
+
+[[bin]]
+name = "f1r3x"
+path = "src/main.rs"
+
+[dependencies]
+k1ndl1ng-ast = { path = "../k1ndl1ng-ast" }
+k1ndl1ng-parse = { path = "../k1ndl1ng-parse" }
+k1ndl1ng-norm = { path = "../k1ndl1ng-norm" }
+campf1r3-core = { path = "../campf1r3-core" }
+k1ndl1ng-campf1r3 = { path = "../k1ndl1ng-campf1r3" }
+b3ll0ws = { path = "../b3ll0ws" }

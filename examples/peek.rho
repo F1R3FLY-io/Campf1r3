@@ -1,0 +1,7 @@
+// A peek reads without consuming: after the comm the datum is still there for
+// the next reader, which is how a cell is read in rho.
+
+new cell in {
+    cell!(@{Nil}!(Nil))
+  | for(v <<- cell){ stdout!(*v) }
+}

@@ -1,0 +1,10 @@
+// The smallest interesting program: a send and a receipt meet, and the
+// continuation writes what it received to stdout.
+//
+// `stdout` is free. The executive grounds it to an unforgeable derived from
+// the identifier, which is what lets two separate deploys meet on it.
+
+new greeting in {
+    greeting!(Nil)
+  | for(msg <- greeting){ stdout!(*msg) }
+}

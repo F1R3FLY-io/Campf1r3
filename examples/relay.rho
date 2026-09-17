@@ -1,0 +1,9 @@
+// A chain: each stage wakes the next. With `--cores 1` this is four ticks of
+// the control panel, one rhobot at a time; with `--cores 64` it is one.
+
+new a, b, c in {
+    a!(Nil)
+  | for(_ <- a){ b!(Nil) }
+  | for(_ <- b){ c!(Nil) }
+  | for(_ <- c){ stdout!(Nil) }
+}
