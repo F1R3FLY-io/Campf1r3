@@ -11,4 +11,5 @@ crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
 f1r3x = { path = "../f1r3x" }
+f1r3x-host = { path = "../f1r3x-host" }
 campf1r3-core = { path = "../campf1r3-core" }

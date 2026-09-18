@@ -1,0 +1,118 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A rho executive in a page</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, Menlo, monospace; margin: 2rem; max-width: 70rem; }
+  h1 { font-size: 1.1rem; } textarea { width: 100%; height: 7rem; font: inherit; }
+  .row { display: flex; gap: .5rem; margin: .5rem 0; align-items: center; flex-wrap: wrap; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  pre { background: #f6f6f8; padding: .6rem; overflow: auto; max-height: 26rem; }
+  .card { border-left: 3px solid #999; padding: .2rem .5rem; margin: .3rem 0; }
+  .rhobot { border-color: #4a7; } .tuple { border-color: #a74; } .listener { border-color: #47a; }
+  .fp { display: inline-block; width: .8rem; height: .8rem; border-radius: 50%; vertical-align: -1px; }
+</style>
+
+<h1>A rho executive in a page</h1>
+<p>No server, no network. <code>CampF1R3</code> compiled to wasm and polled from
+<code>requestAnimationFrame</code> — the same session, the same frames and the
+same scene trees a headset gets over a socket.</p>
+
+<textarea id="src">new x in {
+    for(y &lt;- x){ x!(*y) | *y }
+  | x!( for(y &lt;- x){ x!(*y) | *y } | stdout!(Nil) )
+}</textarea>
+
+<div class="row">
+  <button id="deploy">Deploy</button>
+  <button id="play">Run</button>
+  <button id="pause">Pause</button>
+  <button id="step">Step round</button>
+  <button id="reset">Reset</button>
+  <label>pacing
+    <select id="pacing"><option value="lockstep">lockstep</option><option value="free">free-running</option></select>
+  </label>
+  <label>width <input id="cores" type="number" min="1" max="8" value="1" style="width:4rem"></label>
+  <span id="status"></span>
+</div>
+
+<div class="cols">
+  <div><h2 style="font-size:.9rem">Scene</h2><div id="scene"></div></div>
+  <div><h2 style="font-size:.9rem">Commit log</h2><pre id="log"></pre></div>
+</div>
+
+<script type="module">
+import { Executive } from "./f1r3x.js";
+
+const x = await Executive.load("f1r3x_wasm.wasm", navigator.hardwareConcurrency || 1);
+const $ = id => document.getElementById(id);
+$("status").textContent = `wire ${x.wire}`;
+x.ready("page");
+
+// A fingerprint is the content hash the store keys by. Two glyphs that agree
+// are the witness that a communication is possible -- the same cue the headset
+// draws as a colour ring.
+const colour = fp => `hsl(${parseInt(fp.slice(0,4),16)/65535*360} 65% 60%)`;
+
+function draw(scene) {
+  const one = c => {
+    const fp = c.chanFp ? `<span class="fp" style="background:${colour(c.chanFp)}"></span> ` : "";
+    return `<div class="card ${c.kind}">${fp}<b>${c.kind}</b> ${escape(c.label)}
+            <br><small>${shape(c.tree)}</small></div>`;
+  };
+  $("scene").innerHTML =
+    `<p><small>tick ${scene.tick} · comms ${scene.comms} · ${scene.quiescent ? "quiescent" : "running"}</small></p>` +
+    [...scene.rhobots, ...scene.tuples, ...scene.listeners].map(one).join("");
+}
+
+// The tree is the term's structure -- what a renderer draws instead of a
+// label. Here it is only summarised; the headset walks the same JSON to place
+// a robot per constructor.
+function shape(t) {
+  switch (t.f) {
+    case "nil": return "0";
+    case "par": return t.parts.map(shape).join(" | ");
+    case "send": return `${glyph(t.chan)}!(${t.args.map(shape).join(", ")})`;
+    case "receive": return `for(${t.binds.map(b => `${b.arrow} ${glyph(b.chan)}`).join(" & ")}){ ${shape(t.body)} }`;
+    case "new": return `new ×${t.count} { ${shape(t.body)} }`;
+    case "drop": return `*${glyph(t.name)}`;
+    case "var": return (t.bound ? "n" : "f") + t.index;
+    case "elided": return "…";
+    default: return t.f;
+  }
+}
+function glyph(g) {
+  if (g.g === "quote") return g.elided ? "@{…}" : `@{${shape(g.proc)}}`;
+  return g.label;
+}
+const escape = s => s.replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+
+$("deploy").onclick = () => {
+  const r = x.request("deploy\n" + $("src").value);
+  if (!r.body.ok) {
+    $("log").textContent = r.body.diags.map(d => `${d.lo}-${d.hi} ${d.code}: ${d.message}`).join("\n");
+  } else {
+    $("log").textContent = "";
+    draw(x.scene().scene);
+  }
+};
+$("play").onclick   = () => x.request("play");
+$("pause").onclick  = () => x.request("pause");
+$("step").onclick   = () => x.request("step");
+$("reset").onclick  = () => { x.request("reset"); draw(x.scene().scene); $("log").textContent = ""; };
+$("pacing").onchange = e => x.request("pacing " + e.target.value);
+$("cores").onchange  = e => x.request(`cores ${e.target.value} 8`);
+
+x.run(frame => {
+  if (frame.t === "round") {
+    draw(frame.scene);
+    $("log").textContent =
+      `round ${frame.round}  ${frame.steps.map(s => s.kind).join(", ")}\n` + $("log").textContent;
+  } else if (frame.t === "stats") {
+    $("status").textContent =
+      `wire ${x.wire} · ${frame.pacing} · width ${frame.cores} · ` +
+      `buffer ${frame.inFlight}/${frame.buffer} · ` +
+      (frame.admissionOpen ? "admission open" : "back-pressure") +
+      ` · ${frame.commitsPerSec}/s`;
+  }
+});
+</script>

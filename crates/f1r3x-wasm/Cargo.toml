@@ -1,0 +1,14 @@
+[package]
+name = "f1r3x-wasm"
+description = "A rho executive in a browser page: the wasm host for CampF1R3, without wasm-bindgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+# No clock, no threads: the page supplies the time and the loop.
+f1r3x-host = { path = "../f1r3x-host", default-features = false }

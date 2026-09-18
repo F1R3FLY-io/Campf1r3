@@ -30,6 +30,14 @@ pub struct Card {
     pub size: u32,
     /// Nesting depth of the underlying term.
     pub depth: u32,
+    /// The channel's content hash, hex: the 32 bytes the store keys by. Two
+    /// cards that agree here sit on one channel, whatever their labels read.
+    pub chan_fp: Option<String>,
+    /// The term this card was built from. Carried so that a consumer wanting
+    /// the term's *shape* rather than its label — a renderer, an LSP server —
+    /// can encode it without walking the machine again, which is the only way
+    /// a card's `id` and its structure are guaranteed to describe one object.
+    pub term: Norm,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +78,8 @@ fn term_card(kind: &'static str, t: &Norm, chan: Option<&Chan>) -> Card {
         label: show_pretty(t),
         size: t.size(),
         depth: t.depth(),
+        chan_fp: chan.map(|c| hex(c.content_hash())),
+        term: t.clone(),
     }
 }
 

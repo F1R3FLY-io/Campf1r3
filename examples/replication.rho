@@ -1,0 +1,17 @@
+// Replication from reflection (Rhobots §8). With
+//
+//     D = for(y <- x){ x!(*y) | *y }
+//
+// the pair  x!(D | P) | D  behaves as !P: after one comm the sender-waiter
+// pair re-forms and one more copy of P joins the live plane. Two
+// substitutions happen in the continuation -- the *y inside the new sender's
+// payload rebuilds that payload, and the full-size *y releases D | P onto the
+// live plane.
+//
+// This is the spec's first acceptance test: if it is legible in the scene,
+// the metaphor is sound.
+
+new x in {
+    for(y <- x){ x!(*y) | *y }
+  | x!( for(y <- x){ x!(*y) | *y } | stdout!(Nil) )
+}

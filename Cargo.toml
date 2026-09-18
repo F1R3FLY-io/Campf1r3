@@ -8,7 +8,10 @@ members = [
   "crates/k1ndl1ng-campf1r3",
   "crates/b3ll0ws",
   "crates/f1r3x",
+  "crates/f1r3x-host",
   "crates/f1r3x-ffi",
+  "crates/f1r3x-wasm",
+  "crates/f1r3x-serve",
 ]
 
 [workspace.package]

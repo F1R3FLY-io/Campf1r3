@@ -1,0 +1,26 @@
+[package]
+name = "f1r3x-host"
+description = "Hosting a rho executive: sessions, pacing and frames, with no transport, no threads and no clock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# wasm32-unknown-unknown has `std`; what it does not have is threads, sockets
+# and a wall clock -- `Instant::now` panics there, which is one of the reasons
+# CampF1R3 exists. This crate never uses the first two at all, and the `std`
+# feature gates the third. Build a wasm host with --no-default-features and
+# the clock cannot be reached by accident.
+default = ["std"]
+std = []
+
+[dependencies]
+k1ndl1ng-norm = { path = "../k1ndl1ng-norm" }
+campf1r3-core = { path = "../campf1r3-core" }
+k1ndl1ng-campf1r3 = { path = "../k1ndl1ng-campf1r3" }
+b3ll0ws = { path = "../b3ll0ws" }
+f1r3x = { path = "../f1r3x" }
+
+[dev-dependencies]
+k1ndl1ng-parse = { path = "../k1ndl1ng-parse" }

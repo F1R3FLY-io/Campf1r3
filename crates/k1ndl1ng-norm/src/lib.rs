@@ -10,12 +10,14 @@
 
 pub mod build;
 pub mod hash;
+pub mod json;
 pub mod rebuild;
 pub mod show;
 pub mod term;
 
 pub use build::{normalise, Diag, FreeName, Normalised, Options, Sort};
 pub use hash::{Blake2b256, Digest32, Hash32};
+pub use json::{tree_to_string, write_tree, Budget, Buf};
 pub use rebuild::{free_key, receive_permuting, Subst, Val};
 pub use show::{show, show_pretty, unnormalise};
 pub use term::{BindKind, DecodeError, NBind, Name, Node, Norm};

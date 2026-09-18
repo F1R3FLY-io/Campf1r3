@@ -1,0 +1,23 @@
+[package]
+name = "f1r3x-serve"
+description = "A rho executive served over WebSocket: the native host for CampF1R3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "f1r3x_serve"
+path = "src/lib.rs"
+
+[[bin]]
+name = "f1r3x-serve"
+path = "src/main.rs"
+
+[dependencies]
+f1r3x-host = { path = "../f1r3x-host" }
+f1r3x = { path = "../f1r3x" }
+
+[dev-dependencies]
+k1ndl1ng-norm = { path = "../k1ndl1ng-norm" }
+k1ndl1ng-parse = { path = "../k1ndl1ng-parse" }
