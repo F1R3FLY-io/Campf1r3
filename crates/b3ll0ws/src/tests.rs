@@ -249,6 +249,7 @@ fn a_run_is_reproducible() {
                 Step::Consumed { cont, .. } => format!("K{}", cont.short()),
                 Step::Minted { count, .. } => format!("N{count}"),
                 Step::Reissued { chan } => format!("R{}", chan.short()),
+                Step::Outbound { aperture, chan } => format!("O{aperture}{}", chan.short()),
                 Step::Inert { term } => format!("I{}", term.short()),
             })
             .collect()

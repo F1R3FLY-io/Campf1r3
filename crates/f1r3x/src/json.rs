@@ -107,6 +107,11 @@ pub fn step(st: &Step) -> String {
             n("spawned", *spawned as u64),
         ],
         Step::Reissued { chan } => vec![s("kind", "reissue"), s("chan", &chan.hex())],
+        Step::Outbound { aperture, chan } => vec![
+            s("kind", "outbound"),
+            n("aperture", *aperture as u64),
+            s("chan", &chan.hex()),
+        ],
     };
     format!("{{{}}}", f.join(","))
 }

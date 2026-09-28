@@ -50,6 +50,7 @@ pub fn slot_sorts(pats: &[Name], binders: u16) -> Vec<Sort> {
             }
             Node::New { body, .. } => procs.push(body.clone()),
             Node::Eval(n) => names.push(n.clone()),
+            Node::Coll { items, .. } => procs.extend(items.iter().cloned()),
             _ => {}
         }
     }
@@ -63,6 +64,7 @@ enum U {
     MkSend(bool, u32),
     MkEval,
     MkQuote,
+    MkColl(crate::term::CollKind, u32),
     MkNew(u32),
     MkRecv(u32, u32),
     MkBind(BindKind, u32),
@@ -103,6 +105,21 @@ pub fn unnormalise(t: &Norm) -> Ast {
                 Node::Nil => {
                     let x = b.nil();
                     procs.push(x);
+                }
+                Node::Lit(l) => {
+                    let x = match l {
+                        crate::term::Lit::Bool(v) => b.lit_bool(*v),
+                        crate::term::Lit::Int(v) => b.lit_int(*v),
+                        crate::term::Lit::Str(t) => b.lit_str(t),
+                        crate::term::Lit::Bytes(v) => b.lit_bytes(v),
+                    };
+                    procs.push(x);
+                }
+                Node::Coll { kind, items } => {
+                    jobs.push(U::MkColl(*kind, items.len() as u32));
+                    for c in items.iter().rev() {
+                        jobs.push(U::P(c.clone()));
+                    }
                 }
                 Node::Wild => {
                     let x = b.add_proc(k1ndl1ng_ast::ProcNode::Wild, k1ndl1ng_ast::Span::NULL);
@@ -207,6 +224,12 @@ pub fn unnormalise(t: &Norm) -> Ast {
                 let p = procs.pop().unwrap_or_else(|| b.nil());
                 let x = b.quote(p);
                 names.push(x);
+            }
+            U::MkColl(kind, n) => {
+                let at = procs.len() - n as usize;
+                let items = procs.split_off(at);
+                let x = b.coll(kind, &items);
+                procs.push(x);
             }
             U::MkEval => {
                 let n = names.pop().unwrap_or_else(|| b.name_var("?"));

@@ -100,6 +100,33 @@ pub enum ProcNode {
     Error {
         diag: DiagId,
     },
+    /// K1G ground leaves. A string is interned decoded; bytes are interned as
+    /// lower-case hex (bytes have no surface syntax, only a printed form).
+    Bool {
+        v: bool,
+    },
+    Int {
+        v: i64,
+    },
+    Str {
+        id: Sym,
+    },
+    Bytes {
+        hex: Sym,
+    },
+    /// K1G collections. A map's items alternate key and value.
+    Coll {
+        kind: CollKind,
+        items: Slice,
+    },
+}
+
+/// The three K1G collection sorts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CollKind {
+    List,
+    Tuple,
+    Map,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -254,6 +281,8 @@ impl Ast {
         for (i, p) in self.procs.iter().enumerate() {
             match *p {
                 ProcNode::Nil | ProcNode::Wild | ProcNode::Var { .. } => {}
+                ProcNode::Bool { .. } | ProcNode::Int { .. } | ProcNode::Str { .. } | ProcNode::Bytes { .. } => {}
+                ProcNode::Coll { items, .. } => self.check_proc_slice(items, np)?,
                 ProcNode::Error { .. } => return Err(WfError::ErrorNode(ProcId(i as u32))),
                 ProcNode::Par(s) => {
                     if s.len < 2 {
@@ -344,6 +373,7 @@ impl Ast {
             };
             match self.procs[p.ix()] {
                 ProcNode::Par(s) => stack.extend_from_slice(self.procs_of(s)),
+                ProcNode::Coll { items, .. } => stack.extend_from_slice(self.procs_of(items)),
                 ProcNode::Send { chan, args, .. } => {
                     push_name(chan, &mut stack, &mut seen_n);
                     stack.extend_from_slice(self.procs_of(args));
@@ -406,6 +436,11 @@ impl Ast {
                 }
                 ProcNode::Receive { body, .. } => stack.push((body, mix(h, 0x200))),
                 ProcNode::New { body, .. } => stack.push((body, mix(h, 0x300))),
+                ProcNode::Coll { items, .. } => {
+                    for (i, c) in self.procs_of(items).iter().enumerate() {
+                        stack.push((*c, mix(h, 0x400 + i as u64)));
+                    }
+                }
                 _ => {}
             }
         }
@@ -541,6 +576,25 @@ impl Builder {
         }
         let r = self.add_receipt(first.unwrap_or(BindId(0)), count, None);
         self.add_proc(ProcNode::Receive { receipt: r, body }, Span::NULL)
+    }
+    pub fn lit_bool(&mut self, v: bool) -> ProcId {
+        self.add_proc(ProcNode::Bool { v }, Span::NULL)
+    }
+    pub fn lit_int(&mut self, v: i64) -> ProcId {
+        self.add_proc(ProcNode::Int { v }, Span::NULL)
+    }
+    pub fn lit_str(&mut self, t: &str) -> ProcId {
+        let id = self.intern(t);
+        self.add_proc(ProcNode::Str { id }, Span::NULL)
+    }
+    pub fn lit_bytes(&mut self, b: &[u8]) -> ProcId {
+        let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        let hex = self.intern(&hex);
+        self.add_proc(ProcNode::Bytes { hex }, Span::NULL)
+    }
+    pub fn coll(&mut self, kind: CollKind, items: &[ProcId]) -> ProcId {
+        let s = self.proc_slice(items);
+        self.add_proc(ProcNode::Coll { kind, items: s }, Span::NULL)
     }
     pub fn eval(&mut self, name: NameId) -> ProcId {
         self.add_proc(ProcNode::Eval { name }, Span::NULL)

@@ -57,6 +57,7 @@ enum R {
     MkNew(u32),
     MkEval,
     MkQuote,
+    MkColl(crate::term::CollKind, u32),
 }
 
 impl Norm {
@@ -175,7 +176,10 @@ fn rebuild(t: &Norm, xf: &Xf<'_>) -> Norm {
                     args,
                 } => {
                     steps.push(R::MkSendHead(*persistent, args.len() as u32));
-                    for a in args {
+                    // Reversed so that the stack yields them in argument order:
+                    // a polyadic send must keep its arity order through
+                    // substitution.
+                    for a in args.iter().rev() {
                         steps.push(R::P(a.clone(), d));
                     }
                     steps.push(R::N(chan.clone(), d));
@@ -187,6 +191,13 @@ fn rebuild(t: &Norm, xf: &Xf<'_>) -> Norm {
                 Node::Eval(n) => {
                     steps.push(R::MkEval);
                     steps.push(R::N(n.clone(), d));
+                }
+                Node::Lit(_) => procs.push(p.clone()),
+                Node::Coll { kind, items } => {
+                    steps.push(R::MkColl(*kind, items.len() as u32));
+                    for c in items.iter().rev() {
+                        steps.push(R::P(c.clone(), d));
+                    }
                 }
                 Node::Receive { binds, body } => {
                     let k: u32 = binds.iter().map(|b| b.binders as u32).sum();
@@ -235,6 +246,11 @@ fn rebuild(t: &Norm, xf: &Xf<'_>) -> Norm {
             R::MkQuote => {
                 let p = procs.pop().expect("quote operand");
                 names.push(Norm::quote(p));
+            }
+            R::MkColl(kind, n) => {
+                let at = procs.len() - n as usize;
+                let items = procs.split_off(at);
+                procs.push(Norm::coll(kind, items));
             }
             R::MkEval => {
                 let n = names.pop().expect("eval operand");

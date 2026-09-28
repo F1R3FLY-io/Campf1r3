@@ -92,6 +92,7 @@ enum J {
     BindMid(BindKind, u32),
     RecvMid { nbinds: u32, body: ProcId },
     RecvFinish(u32),
+    MkColl(CollKind, u32, Span),
 }
 
 struct Norms<'a> {
@@ -241,6 +242,23 @@ pub fn normalise(tree: &Ast, opts: &Options) -> Result<Normalised, Vec<Diag>> {
                 let span = tree.proc_span(p);
                 match tree.proc(p) {
                     ProcNode::Nil => st.procs.push(Norm::nil()),
+                    ProcNode::Bool { v } => st.procs.push(Norm::bool(v)),
+                    ProcNode::Int { v } => st.procs.push(Norm::int(v)),
+                    ProcNode::Str { id } => st.procs.push(Norm::str(tree.text(id))),
+                    ProcNode::Bytes { hex } => {
+                        let h = tree.text(hex);
+                        let b: Vec<u8> = (0..h.len() / 2)
+                            .filter_map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok())
+                            .collect();
+                        st.procs.push(Norm::bytes(&b));
+                    }
+                    ProcNode::Coll { kind, items } => {
+                        let kids = tree.procs_of(items);
+                        jobs.push(J::MkColl(kind, kids.len() as u32, span));
+                        for k in kids.iter().rev() {
+                            jobs.push(J::P(*k, ctx));
+                        }
+                    }
                     ProcNode::Error { .. } => {
                         st.err(span, "error-node", "term contains a parse error".to_string());
                         st.procs.push(Norm::nil());
@@ -353,6 +371,18 @@ pub fn normalise(tree: &Ast, opts: &Options) -> Result<Normalised, Vec<Diag>> {
             J::MkQuote => {
                 let p = st.procs.pop().expect("quote operand");
                 st.names.push(Norm::quote(p));
+            }
+            J::MkColl(kind, n, span) => {
+                let at = st.procs.len() - n as usize;
+                let items = st.procs.split_off(at);
+                if kind == CollKind::Map {
+                    let mut keys: Vec<&[u8]> = items.iter().step_by(2).map(|k| k.encode()).collect();
+                    keys.sort();
+                    if keys.windows(2).any(|w| w[0] == w[1]) {
+                        st.err(span, "duplicate-key", "a map literal names the same key twice".to_string());
+                    }
+                }
+                st.procs.push(Norm::coll(kind, items));
             }
             J::MkEval(span) => {
                 let n = st.names.pop().expect("eval operand");
@@ -540,6 +570,11 @@ pub fn free_levels_in_order(t: &Norm) -> Vec<u32> {
                 }
                 Node::New { body, .. } => stack.push(W::P(body.clone())),
                 Node::Eval(n) => stack.push(W::N(n.clone())),
+                Node::Coll { items, .. } => {
+                    for c in items.iter().rev() {
+                        stack.push(W::P(c.clone()));
+                    }
+                }
                 _ => {}
             },
         }

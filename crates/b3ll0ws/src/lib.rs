@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use campf1r3_core::{Config, Keyed, PeekSet, SpaceError};
+use campf1r3_core::{Config, Keyed, NoObserver, Observer, PeekSet, SpaceError};
 use k1ndl1ng_campf1r3::{BindPat, Chan, Cont, Data, RSpace};
 use k1ndl1ng_norm::{BindKind, BinderPath, Hash32, NBind, Name, NameMinter, Node, Norm, Subst, Val};
 
@@ -44,6 +44,20 @@ pub enum Step {
     },
     /// A persistent record that reacted is being re-issued (Req. 2.7).
     Reissued { chan: Hash32 },
+    /// A send on an aperture left the machine for the host's outbox.
+    Outbound { aperture: u32, chan: Hash32 },
+}
+
+/// A host-owned channel. Sends on it go to the outbox, never to the store.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub struct ApertureId(pub u32);
+
+/// One send the page made on an aperture, in the order it was made.
+#[derive(Clone, Debug)]
+pub struct Outbound {
+    pub aperture: ApertureId,
+    pub args: Vec<Norm>,
+    pub seq: u64,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -156,8 +170,16 @@ pub struct Job {
     pub path: Vec<u32>,
 }
 
-pub struct Machine<B: Backend = Direct, M: NameMinter = Sequential> {
-    space: RSpace,
+pub struct Machine<
+    B: Backend = Direct,
+    M: NameMinter = Sequential,
+    O: Observer<Chan, BindPat, Data, Cont> = NoObserver,
+> {
+    space: RSpace<O>,
+    apertures: BTreeMap<campf1r3_core::Hash32, ApertureId>,
+    outbox: Vec<Outbound>,
+    out_seq: u64,
+    inject_seq: u32,
     backend: B,
     minter: M,
     queue: VecDeque<Job>,
@@ -174,10 +196,21 @@ impl Machine<Direct, Sequential> {
     }
 }
 
-impl<B: Backend, M: NameMinter> Machine<B, M> {
+impl<B: Backend, M: NameMinter> Machine<B, M, NoObserver> {
     pub fn with(cfg: Config, backend: B, minter: M) -> Machine<B, M> {
+        Machine::with_observer(cfg, backend, minter, NoObserver)
+    }
+}
+
+impl<B: Backend, M: NameMinter, O: Observer<Chan, BindPat, Data, Cont>> Machine<B, M, O> {
+    /// A machine whose store reports every cut to `observer` (U3).
+    pub fn with_observer(cfg: Config, backend: B, minter: M, observer: O) -> Machine<B, M, O> {
         Machine {
-            space: k1ndl1ng_campf1r3::rspace(cfg),
+            space: k1ndl1ng_campf1r3::rspace_with(cfg, observer),
+            apertures: BTreeMap::new(),
+            outbox: Vec::new(),
+            out_seq: 0,
+            inject_seq: 0,
             backend,
             minter,
             queue: VecDeque::new(),
@@ -187,8 +220,35 @@ impl<B: Backend, M: NameMinter> Machine<B, M> {
         }
     }
 
-    pub fn space(&self) -> &RSpace {
+    pub fn space(&self) -> &RSpace<O> {
         &self.space
+    }
+    pub fn minter(&self) -> &M {
+        &self.minter
+    }
+
+    /// Make `chan` an aperture: sends on it go to the outbox (U4).
+    pub fn bind_aperture(&mut self, chan: Name, id: ApertureId) {
+        self.apertures.insert(Chan(chan).content_hash(), id);
+    }
+    pub fn unbind_aperture(&mut self, id: ApertureId) {
+        self.apertures.retain(|_, v| *v != id);
+    }
+    pub fn is_aperture(&self, chan: &Name) -> Option<ApertureId> {
+        self.apertures.get(&Chan(chan.clone()).content_hash()).copied()
+    }
+    /// Drain the sends made on apertures, in the order they were made.
+    pub fn take_outbound(&mut self) -> Vec<Outbound> {
+        std::mem::take(&mut self.outbox)
+    }
+    /// The host's only write path: a send, queued like any other job, so it
+    /// passes through the store, the observer and the resolver.
+    pub fn inject(&mut self, chan: Name, args: Vec<Norm>) {
+        self.inject_seq = self.inject_seq.wrapping_add(1);
+        self.queue.push_back(Job {
+            term: Norm::send(chan, false, args),
+            path: vec![u32::MAX - 1, self.inject_seq],
+        });
     }
     pub fn backend(&self) -> &B {
         &self.backend
@@ -227,7 +287,16 @@ impl<B: Backend, M: NameMinter> Machine<B, M> {
     pub fn step(&mut self) -> Option<Result<Vec<Step>, SpaceError>> {
         let job = self.queue.pop_front()?;
         self.steps += 1;
-        Some(self.run_job(job))
+        let keep = job.clone();
+        let r = self.run_job(job);
+        if let Err(SpaceError::Aborted) = r {
+            // An observer refused the cut. The store wrote nothing, so the job
+            // goes back to the head of the queue: a budget that runs out stops
+            // progress without losing work, and the run resumes when the
+            // observer admits it again.
+            self.queue.push_front(keep);
+        }
+        Some(r)
     }
 
     /// Run until quiescent or until `budget` steps have been taken. Returns the
@@ -288,6 +357,27 @@ impl<B: Backend, M: NameMinter> Machine<B, M> {
             } => {
                 let c = Chan(chan);
                 let chash = c.content_hash();
+                if let Some(id) = self.apertures.get(&chash).copied() {
+                    let d = Data::new(args);
+                    self.space
+                        .observer()
+                        .observe_aperture(&c, &d)
+                        .map_err(|_| SpaceError::Aborted)?;
+                    if persistent {
+                        // Delivered once: the host is not a store.
+                    }
+                    self.out_seq += 1;
+                    self.outbox.push(Outbound {
+                        aperture: id,
+                        args: d.args().to_vec(),
+                        seq: self.out_seq,
+                    });
+                    out.push(Step::Outbound {
+                        aperture: id.0,
+                        chan: sh(chash),
+                    });
+                    return Ok(out);
+                }
                 self.seen.insert(sh(chash), c.clone());
                 let d = Data::new(args);
                 let dhash = d.content_hash();
@@ -364,7 +454,12 @@ impl<B: Backend, M: NameMinter> Machine<B, M> {
             // at top level, has nowhere to go. A closed term should not contain
             // these; the machine records them rather than failing, so the
             // renderer can show a stuck rhobot.
-            Node::Eval(_) | Node::BoundVar(_) | Node::FreeVar(_) | Node::Wild => {
+            Node::Eval(_)
+            | Node::BoundVar(_)
+            | Node::FreeVar(_)
+            | Node::Wild
+            | Node::Lit(_)
+            | Node::Coll { .. } => {
                 out.push(Step::Inert {
                     term: job.term.hash(),
                 })

@@ -20,7 +20,7 @@ pub use hash::{Blake2b256, Digest32, Hash32};
 pub use json::{tree_to_string, write_tree, Budget, Buf};
 pub use rebuild::{free_key, receive_permuting, Subst, Val};
 pub use show::{show, show_pretty, unnormalise};
-pub use term::{BindKind, DecodeError, NBind, Name, Node, Norm};
+pub use term::{BindKind, CollKind, DecodeError, Lit, NBind, Name, Node, Norm};
 
 /// Minting policy for the unforgeable names a `new` introduces.
 /// `Sequential` is a pure function of the binder's position, so a
@@ -47,6 +47,37 @@ impl NameMinter for Sequential {
     fn mint(&mut self, path: &BinderPath) -> [u8; 32] {
         let mut pre = Vec::with_capacity(16 + 4 * path.steps.len());
         pre.extend_from_slice(b"k1ndl1ng/seq/");
+        pre.extend_from_slice(&self.counter.to_le_bytes());
+        for s in &path.steps {
+            pre.extend_from_slice(&s.to_le_bytes());
+        }
+        pre.extend_from_slice(&path.slot.to_le_bytes());
+        self.counter += 1;
+        hash::blake2b_256(&pre).0
+    }
+}
+
+/// A minter keyed by a secret seed: names are unguessable to anyone who does
+/// not hold the seed, and a run is still reproducible from the seed.
+pub struct Keyed {
+    seed: [u8; 32],
+    counter: u64,
+}
+
+impl Keyed {
+    pub fn new(seed: [u8; 32]) -> Keyed {
+        Keyed { seed, counter: 0 }
+    }
+    pub fn seed(&self) -> [u8; 32] {
+        self.seed
+    }
+}
+
+impl NameMinter for Keyed {
+    fn mint(&mut self, path: &BinderPath) -> [u8; 32] {
+        let mut pre = Vec::with_capacity(64 + 4 * path.steps.len());
+        pre.extend_from_slice(b"k1ndl1ng/keyed/");
+        pre.extend_from_slice(&self.seed);
         pre.extend_from_slice(&self.counter.to_le_bytes());
         for s in &path.steps {
             pre.extend_from_slice(&s.to_le_bytes());

@@ -40,7 +40,8 @@ pub fn match_pats(pats: &[Name], args: &[Norm], binders: u16) -> Option<Vec<Val>
     // Pushed in reverse so that position 0 is examined first: the order does
     // not affect the result, only which mismatch is found soonest.
     for (p, a) in pats.iter().zip(args.iter()).rev() {
-        goals.push(Goal::N(p.clone(), Name::Quote(a.clone())));
+        // `Norm::quote` applies `@*x = x`: a datum that is `*x` *is* the name x.
+        goals.push(Goal::N(p.clone(), Norm::quote(a.clone())));
     }
     run(goals, binders as usize)
 }
@@ -150,7 +151,13 @@ fn step(
                         goals.push(Goal::P(pp, tq));
                         true
                     }
-                    _ => false,
+                    // A concrete name met by a quoted pattern: compare as
+                    // processes, `*x` against the pattern body, so that
+                    // `@{*y}` binds `y` to `x` (`*@P = P`, `@*x = x`).
+                    other => {
+                        goals.push(Goal::P(pp, Norm::eval(other)));
+                        true
+                    }
                 }
             }
             other => other == tgt,
@@ -161,12 +168,25 @@ fn step(
             _ if !has_holes(&pat) => pat.encode() == tgt.encode(),
             Node::Nil => tgt.is_nil(),
             Node::BoundVar(_) => pat.encode() == tgt.encode(),
+            Node::Lit(_) => pat.encode() == tgt.encode(),
+            // K1G collections match elementwise, same sort and same length.
+            // Map patterns are paired in stored (key-encoding) order, so a hole
+            // in a map *key* can misalign pairs; keys should be ground in v1.
+            Node::Coll { kind, items } => match tgt.node() {
+                Node::Coll { kind: tk, items: ti } if tk == kind && ti.len() == items.len() => {
+                    for (a, t) in items.iter().zip(ti.iter()) {
+                        goals.push(Goal::P(a.clone(), t.clone()));
+                    }
+                    true
+                }
+                _ => false,
+            },
             // `*y` with `y` a pattern binder matches any process `P`, binding
             // `y` to `@P` — `*@P` is `P`, so the two sides agree. Only when the
             // unquoted name is itself concrete does the target have to be an
             // `Eval` too.
             Node::Eval(Name::Free(slot)) => {
-                bind(*slot as usize, Val::Name(Name::Quote(tgt)), binds, trail)
+                bind(*slot as usize, Val::Name(Norm::quote(tgt)), binds, trail)
             }
             Node::Eval(n) => match tgt.node() {
                 Node::Eval(tn) => {
@@ -371,8 +391,9 @@ pub fn has_holes(p: &Norm) -> bool {
         };
         match cur.node() {
             Node::Wild | Node::FreeVar(_) => return true,
-            Node::Nil | Node::BoundVar(_) => {}
+            Node::Nil | Node::BoundVar(_) | Node::Lit(_) => {}
             Node::Par(v) => procs.extend(v.iter().cloned()),
+            Node::Coll { items, .. } => procs.extend(items.iter().cloned()),
             Node::Send { chan, args, .. } => {
                 names.push(chan.clone());
                 procs.extend(args.iter().cloned());

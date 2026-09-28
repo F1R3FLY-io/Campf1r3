@@ -18,6 +18,9 @@ use lex::{lex, Tok, Token};
 pub enum Level {
     K0,
     K1,
+    /// K1 plus ground data: literals, lists, tuples and maps.
+    K1G,
+    /// K1G plus `where` guards.
     K2,
 }
 
@@ -26,6 +29,7 @@ impl Level {
         match self {
             Level::K0 => "K0",
             Level::K1 => "K1",
+            Level::K1G => "K1G",
             Level::K2 => "K2",
         }
     }
@@ -128,7 +132,9 @@ struct RecvState {
 
 enum Frame {
     Par { parts: Vec<ProcId>, lo: u32 },
-    Group { closer: Closer },
+    Group { closer: Closer, lo: u32 },
+    /// A K1G collection being read. For a map, `items` alternate key, value.
+    Coll { kind: CollKind, items: Vec<ProcId>, lo: u32 },
     Quote { lo: u32 },
     Eval { lo: u32 },
     SendHead { lo: u32 },
@@ -214,6 +220,35 @@ impl<'a> Parser<'a> {
         }
     }
     /// Report a construct that a higher level would accept (Req. 2.1).
+    fn need_ground(&mut self, span: Span) {
+        if self.opts.level < Level::K1G {
+            self.need_level(span, "ground data", Level::K1G);
+        }
+    }
+
+    /// Decode a string token (quotes included) with rholang's escapes.
+    fn unescape(&mut self, raw: &str, span: Span) -> String {
+        let inner = raw.strip_prefix('"').unwrap_or(raw);
+        let inner = inner.strip_suffix('"').unwrap_or(inner);
+        let mut out = String::with_capacity(inner.len());
+        let mut it = inner.chars();
+        while let Some(c) = it.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match it.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                _ => self.err(span, "escape", "unknown escape in string".to_string()),
+            }
+        }
+        out
+    }
+
     fn need_level(&mut self, span: Span, what: &str, lvl: Level) {
         let msg = format!(
             "{} needs {}; this parser is at {}",
@@ -288,15 +323,77 @@ impl<'a> Parser<'a> {
                             self.bump();
                             stack.push(Frame::Group {
                                 closer: Closer::Paren,
+                                lo: t.lo,
                             });
                             mode = Mode::NeedProc;
+                        }
+                        Tok::LBrace if self.peek2().kind == Tok::RBrace => {
+                            // `{}` is the empty map.
+                            self.bump();
+                            self.bump();
+                            self.need_ground(t.span());
+                            let empty = self.b.proc_slice(&[]);
+                            let p = self.b.add_proc(
+                                ProcNode::Coll { kind: CollKind::Map, items: empty },
+                                Span::new(t.lo, self.prev_hi()),
+                            );
+                            mode = Mode::HaveProc(p);
                         }
                         Tok::LBrace => {
                             self.bump();
                             stack.push(Frame::Group {
                                 closer: Closer::Brace,
+                                lo: t.lo,
                             });
                             mode = Mode::NeedProc;
+                        }
+                        Tok::True | Tok::False => {
+                            self.bump();
+                            self.need_ground(t.span());
+                            let p = self.b.add_proc(ProcNode::Bool { v: t.kind == Tok::True }, t.span());
+                            mode = Mode::HaveProc(p);
+                        }
+                        Tok::Int => {
+                            self.bump();
+                            self.need_ground(t.span());
+                            let v = match self.text(t).parse::<i64>() {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    self.err(t.span(), "int-range", "integer does not fit in 64 bits".to_string());
+                                    0
+                                }
+                            };
+                            let p = self.b.add_proc(ProcNode::Int { v }, t.span());
+                            mode = Mode::HaveProc(p);
+                        }
+                        Tok::Str => {
+                            self.bump();
+                            self.need_ground(t.span());
+                            let raw = self.text(t).to_string();
+                            let v = self.unescape(&raw, t.span());
+                            let id = self.b.intern(&v);
+                            let p = self.b.add_proc(ProcNode::Str { id }, t.span());
+                            mode = Mode::HaveProc(p);
+                        }
+                        Tok::LBracket => {
+                            self.bump();
+                            self.need_ground(t.span());
+                            if self.at(Tok::RBracket) {
+                                self.bump();
+                                let empty = self.b.proc_slice(&[]);
+                            let p = self.b.add_proc(
+                                ProcNode::Coll { kind: CollKind::List, items: empty },
+                                    Span::new(t.lo, self.prev_hi()),
+                                );
+                                mode = Mode::HaveProc(p);
+                            } else {
+                                stack.push(Frame::Coll {
+                                    kind: CollKind::List,
+                                    items: Vec::new(),
+                                    lo: t.lo,
+                                });
+                                mode = Mode::NeedProc;
+                            }
                         }
                         Tok::Star => {
                             self.bump();
@@ -640,6 +737,7 @@ impl<'a> Parser<'a> {
                         Frame::Quote { .. }
                         | Frame::Par { .. }
                         | Frame::Group { .. }
+                        | Frame::Coll { .. }
                         | Frame::SendArgs { .. }
                         | Frame::NewBody { .. }
                         | Frame::RecvBody { .. } => {
@@ -676,12 +774,49 @@ impl<'a> Parser<'a> {
                                 mode = Mode::HaveProc(q);
                             }
                         }
-                        Frame::Group { closer } => {
-                            match closer {
-                                Closer::Paren => self.expect(Tok::RParen, "`)`"),
-                                Closer::Brace => self.expect(Tok::RBrace, "`}`"),
+                        Frame::Group { closer, lo } => {
+                            if closer == Closer::Paren && self.at(Tok::Comma) {
+                                // `(a, b, ...)` is a tuple.
+                                self.bump();
+                                self.need_ground(Span::new(lo, self.prev_hi()));
+                                stack.push(Frame::Coll { kind: CollKind::Tuple, items: vec![p], lo });
+                                mode = Mode::NeedProc;
+                            } else if closer == Closer::Brace && self.at(Tok::Colon) {
+                                // `{k: v, ...}` is a map.
+                                self.bump();
+                                self.need_ground(Span::new(lo, self.prev_hi()));
+                                stack.push(Frame::Coll { kind: CollKind::Map, items: vec![p], lo });
+                                mode = Mode::NeedProc;
+                            } else {
+                                match closer {
+                                    Closer::Paren => self.expect(Tok::RParen, "`)`"),
+                                    Closer::Brace => self.expect(Tok::RBrace, "`}`"),
+                                };
+                                mode = Mode::HaveProc(p);
+                            }
+                        }
+                        Frame::Coll { kind, mut items, lo } => {
+                            items.push(p);
+                            let (close, what) = match kind {
+                                CollKind::List => (Tok::RBracket, "`]` closing the list"),
+                                CollKind::Tuple => (Tok::RParen, "`)` closing the tuple"),
+                                CollKind::Map => (Tok::RBrace, "`}` closing the map"),
                             };
-                            mode = Mode::HaveProc(p);
+                            if kind == CollKind::Map && items.len() % 2 == 1 {
+                                self.expect(Tok::Colon, "`:` after a map key");
+                                stack.push(Frame::Coll { kind, items, lo });
+                                mode = Mode::NeedProc;
+                            } else if self.at(Tok::Comma) {
+                                self.bump();
+                                stack.push(Frame::Coll { kind, items, lo });
+                                mode = Mode::NeedProc;
+                            } else {
+                                self.expect(close, what);
+                                let s = self.b.proc_slice(&items);
+                                let hi = self.prev_hi();
+                                let q = self.b.add_proc(ProcNode::Coll { kind, items: s }, Span::new(lo, hi));
+                                mode = Mode::HaveProc(q);
+                            }
                         }
                         Frame::Quote { lo } => {
                             let hi = self.prev_hi();

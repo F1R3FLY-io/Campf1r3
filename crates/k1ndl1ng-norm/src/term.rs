@@ -20,6 +20,14 @@ pub const T_EVAL: u8 = 0x05;
 pub const T_BOUND_VAR: u8 = 0x06;
 pub const T_FREE_VAR: u8 = 0x07;
 pub const T_WILD: u8 = 0x08;
+// K1G ground data (spec: F1R3Gaze implementation specification, U1).
+pub const T_BOOL: u8 = 0x09;
+pub const T_INT: u8 = 0x0A;
+pub const T_STR: u8 = 0x0B;
+pub const T_BYTES: u8 = 0x0C;
+pub const T_LIST: u8 = 0x0D;
+pub const T_TUPLE: u8 = 0x0E;
+pub const T_MAP: u8 = 0x0F;
 pub const T_QUOTE: u8 = 0x10;
 pub const T_BOUND_NAME: u8 = 0x11;
 pub const T_FREE_NAME: u8 = 0x12;
@@ -144,6 +152,33 @@ pub enum Node {
     BoundVar(u32),
     FreeVar(u32),
     Wild,
+    /// A ground leaf (K1G).
+    Lit(Lit),
+    /// A ground collection (K1G). A map's items are `k0, v0, k1, v1, ...`,
+    /// pairs ordered by the encoding of their keys.
+    Coll { kind: CollKind, items: Vec<Norm> },
+}
+
+/// Ground leaves. No floats: every consumer needs bit-identical results.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Lit {
+    Bool(bool),
+    Int(i64),
+    Str(Box<str>),
+    Bytes(Box<[u8]>),
+}
+
+pub use k1ndl1ng_ast::CollKind;
+
+/// The encoding tag of a collection sort.
+pub fn coll_tag(kind: CollKind) -> u8 {
+    {
+        match kind {
+            CollKind::List => T_LIST,
+            CollKind::Tuple => T_TUPLE,
+            CollKind::Map => T_MAP,
+        }
+    }
 }
 
 struct Inner {
@@ -188,6 +223,7 @@ fn take_children(node: &mut Node, out: &mut Vec<Norm>) {
         }
         Node::New { body, .. } => out.push(body),
         Node::Eval(n) => push_name(n, out),
+        Node::Coll { items, .. } => out.extend(items),
         _ => {}
     }
 }
@@ -405,6 +441,128 @@ impl Norm {
         Norm::make(Node::Wild, vec![T_WILD], 1, 1)
     }
 
+    /// A ground leaf.
+    pub fn lit(l: Lit) -> Norm {
+        let mut enc = Vec::new();
+        match &l {
+            Lit::Bool(b) => {
+                enc.push(T_BOOL);
+                enc.push(*b as u8);
+            }
+            Lit::Int(i) => {
+                enc.push(T_INT);
+                zigzag(*i, &mut enc);
+            }
+            Lit::Str(t) => {
+                enc.push(T_STR);
+                leb(t.len() as u32, &mut enc);
+                enc.extend_from_slice(t.as_bytes());
+            }
+            Lit::Bytes(b) => {
+                enc.push(T_BYTES);
+                leb(b.len() as u32, &mut enc);
+                enc.extend_from_slice(b);
+            }
+        }
+        Norm::make(Node::Lit(l), enc, 1, 1)
+    }
+    pub fn bool(b: bool) -> Norm {
+        Norm::lit(Lit::Bool(b))
+    }
+    pub fn int(i: i64) -> Norm {
+        Norm::lit(Lit::Int(i))
+    }
+    pub fn str(t: &str) -> Norm {
+        Norm::lit(Lit::Str(t.into()))
+    }
+    pub fn bytes(b: &[u8]) -> Norm {
+        Norm::lit(Lit::Bytes(b.into()))
+    }
+    pub fn list(items: Vec<Norm>) -> Norm {
+        Norm::coll(CollKind::List, items)
+    }
+    pub fn tuple(items: Vec<Norm>) -> Norm {
+        Norm::coll(CollKind::Tuple, items)
+    }
+    /// A map from pairs. Pairs are ordered by key encoding. Keys that
+    /// coincide (which substitution can cause) are resolved deterministically:
+    /// the pair with the least value encoding is kept. The normaliser rejects
+    /// duplicate keys written in source (`duplicate-key`).
+    pub fn map(pairs: Vec<(Norm, Norm)>) -> Norm {
+        let mut pairs = pairs;
+        pairs.sort_by(|a, b| a.0.encode().cmp(b.0.encode()).then(a.1.encode().cmp(b.1.encode())));
+        pairs.dedup_by(|b, a| a.0.encode() == b.0.encode());
+        let mut items = Vec::with_capacity(pairs.len() * 2);
+        for (k, v) in pairs {
+            items.push(k);
+            items.push(v);
+        }
+        Norm::coll_raw(CollKind::Map, items)
+    }
+    /// A collection. For `Map`, `items` alternate keys and values and are
+    /// re-ordered here.
+    pub fn coll(kind: CollKind, items: Vec<Norm>) -> Norm {
+        if kind == CollKind::Map {
+            let mut pairs = Vec::with_capacity(items.len() / 2);
+            let mut it = items.into_iter();
+            while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                pairs.push((k, v));
+            }
+            return Norm::map(pairs);
+        }
+        Norm::coll_raw(kind, items)
+    }
+    fn coll_raw(kind: CollKind, items: Vec<Norm>) -> Norm {
+        let mut enc = vec![coll_tag(kind)];
+        let n = if kind == CollKind::Map { items.len() / 2 } else { items.len() };
+        leb(n as u32, &mut enc);
+        let mut size = 1u32;
+        let mut depth = 0u32;
+        for a in &items {
+            enc.extend_from_slice(a.encode());
+            size = size.saturating_add(a.size());
+            depth = depth.max(a.depth());
+        }
+        Norm::make(Node::Coll { kind, items }, enc, size, depth + 1)
+    }
+    /// The leaf, if this is one.
+    pub fn as_lit(&self) -> Option<&Lit> {
+        match self.node() {
+            Node::Lit(l) => Some(l),
+            _ => None,
+        }
+    }
+    pub fn as_str(&self) -> Option<&str> {
+        match self.as_lit() {
+            Some(Lit::Str(s)) => Some(s),
+            _ => None,
+        }
+    }
+    pub fn as_int(&self) -> Option<i64> {
+        match self.as_lit() {
+            Some(Lit::Int(i)) => Some(*i),
+            _ => None,
+        }
+    }
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.as_lit() {
+            Some(Lit::Bool(b)) => Some(*b),
+            _ => None,
+        }
+    }
+    /// The items, if this is a collection of `kind`.
+    pub fn as_coll(&self, kind: CollKind) -> Option<&[Norm]> {
+        match self.node() {
+            Node::Coll { kind: k, items } if *k == kind => Some(items),
+            _ => None,
+        }
+    }
+    /// Look a string key up in a map.
+    pub fn map_get(&self, key: &str) -> Option<&Norm> {
+        let items = self.as_coll(CollKind::Map)?;
+        items.chunks(2).find(|kv| kv[0].as_str() == Some(key)).map(|kv| &kv[1])
+    }
+
     /// `@P`. Applies the rewrite `@*x = x` (Prop. 7.8).
     pub fn quote(p: Norm) -> Name {
         if let Node::Eval(n) = p.node() {
@@ -439,6 +597,20 @@ pub fn leb(mut v: u32, out: &mut Vec<u8>) {
     }
 }
 
+/// Zigzag LEB128 of an `i64` (tag `0x0A`).
+pub fn zigzag(v: i64, out: &mut Vec<u8>) {
+    let mut u = ((v << 1) ^ (v >> 63)) as u64;
+    loop {
+        let byte = (u & 0x7f) as u8;
+        u >>= 7;
+        if u == 0 {
+            out.push(byte);
+            break;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Decoding. Iterative; a function, as Prop. 7.8's second direction requires.
 
@@ -449,6 +621,7 @@ pub enum DecodeError {
     BadLeb,
     TooDeep,
     Trailing,
+    BadUtf8,
 }
 
 struct Reader<'a> {
@@ -477,6 +650,29 @@ impl<'a> Reader<'a> {
             shift += 7;
         }
     }
+    fn leb64(&mut self) -> Result<u64, DecodeError> {
+        let mut out = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let c = self.byte()?;
+            if shift > 63 {
+                return Err(DecodeError::BadLeb);
+            }
+            out |= ((c & 0x7f) as u64) << shift;
+            if c & 0x80 == 0 {
+                return Ok(out);
+            }
+            shift += 7;
+        }
+    }
+    fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
+        if self.i + n > self.b.len() {
+            return Err(DecodeError::Truncated);
+        }
+        let out = &self.b[self.i..self.i + n];
+        self.i += n;
+        Ok(out)
+    }
     fn take32(&mut self) -> Result<[u8; 32], DecodeError> {
         if self.i + 32 > self.b.len() {
             return Err(DecodeError::Truncated);
@@ -501,6 +697,7 @@ enum Step {
     MkEval,
     MkQuote,
     MkBind(BindKind, u32),
+    MkColl(CollKind, u32),
 }
 
 const MAX_DECODE_DEPTH: usize = 1 << 20;
@@ -562,6 +759,7 @@ pub fn binder_count(pats: &[Name]) -> u16 {
             }
             Node::New { body, .. } => procs.push(body.clone()),
             Node::Eval(n) => names.push(n.clone()),
+            Node::Coll { items, .. } => procs.extend(items.iter().cloned()),
             _ => {}
         }
     }
@@ -618,6 +816,38 @@ fn decode_at(r: &mut Reader<'_>) -> Result<Norm, DecodeError> {
                     T_EVAL => {
                         steps.push(Step::MkEval);
                         steps.push(Step::Name);
+                    }
+                    T_BOOL => match r.byte()? {
+                        0 => procs.push(Norm::bool(false)),
+                        1 => procs.push(Norm::bool(true)),
+                        other => return Err(DecodeError::BadTag(other)),
+                    },
+                    T_INT => {
+                        let u = r.leb64()?;
+                        procs.push(Norm::int(((u >> 1) as i64) ^ -((u & 1) as i64)));
+                    }
+                    T_STR => {
+                        let n = r.leb()? as usize;
+                        let b = r.take(n)?;
+                        let t = std::str::from_utf8(b).map_err(|_| DecodeError::BadUtf8)?;
+                        procs.push(Norm::str(t));
+                    }
+                    T_BYTES => {
+                        let n = r.leb()? as usize;
+                        procs.push(Norm::bytes(r.take(n)?));
+                    }
+                    T_LIST | T_TUPLE | T_MAP => {
+                        let kind = match tag {
+                            T_LIST => CollKind::List,
+                            T_TUPLE => CollKind::Tuple,
+                            _ => CollKind::Map,
+                        };
+                        let n = r.leb()?;
+                        let m = if kind == CollKind::Map { n.checked_mul(2).ok_or(DecodeError::BadLeb)? } else { n };
+                        steps.push(Step::MkColl(kind, m));
+                        for _ in 0..m {
+                            steps.push(Step::Proc);
+                        }
                     }
                     other => return Err(DecodeError::BadTag(other)),
                 }
@@ -685,6 +915,14 @@ fn decode_at(r: &mut Reader<'_>) -> Result<Norm, DecodeError> {
             Step::MkEval => {
                 let n = names.pop().ok_or(DecodeError::Truncated)?;
                 procs.push(Norm::eval(n));
+            }
+            Step::MkColl(kind, n) => {
+                let at = procs
+                    .len()
+                    .checked_sub(n as usize)
+                    .ok_or(DecodeError::Truncated)?;
+                let items = procs.split_off(at);
+                procs.push(Norm::coll(kind, items));
             }
             Step::MkPar(n) => {
                 let at = procs

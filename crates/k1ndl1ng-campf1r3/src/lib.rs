@@ -40,7 +40,7 @@ impl Channel for Chan {}
 
 impl Chan {
     pub fn quote(p: Norm) -> Chan {
-        Chan(Name::Quote(p))
+        Chan(Norm::quote(p))
     }
     pub fn unforgeable(b: [u8; 32]) -> Chan {
         Chan(Name::Unforgeable(b))
@@ -71,6 +71,9 @@ impl Data {
     }
     pub fn arity(&self) -> usize {
         self.args.len()
+    }
+    pub fn args(&self) -> &[Norm] {
+        &self.args
     }
 }
 
@@ -147,6 +150,11 @@ pub type RSpace<O = NoObserver> = Space<Chan, BindPat, Data, Cont, Kernel, O>;
 
 pub fn rspace(cfg: Config) -> RSpace {
     Space::new(cfg, Kernel, NoObserver)
+}
+
+/// A kernel space with a caller-supplied accounting observer.
+pub fn rspace_with<O: Observer<Chan, BindPat, Data, Cont>>(cfg: Config, observer: O) -> RSpace<O> {
+    Space::new(cfg, Kernel, observer)
 }
 
 /// Collect a comm result's bindings into one substitution group, in slot

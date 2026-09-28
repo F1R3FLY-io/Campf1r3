@@ -361,6 +361,43 @@ impl Walk<'_> {
                 self.head(p, "wild");
                 self.out.raw("}");
             }
+            Node::Lit(l) => {
+                self.head(p, "lit");
+                match l {
+                    crate::term::Lit::Bool(b) => {
+                        self.out.raw(",\"bool\":");
+                        self.out.bool(*b);
+                    }
+                    crate::term::Lit::Int(i) => {
+                        // As a string: JSON numbers lose i64 precision.
+                        self.out.raw(",\"int\":");
+                        self.out.str(&i.to_string());
+                    }
+                    crate::term::Lit::Str(t) => {
+                        self.out.raw(",\"str\":");
+                        self.out.str(t);
+                    }
+                    crate::term::Lit::Bytes(b) => {
+                        let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+                        self.out.raw(",\"bytes\":");
+                        self.out.str(&h);
+                    }
+                }
+                self.out.raw("}");
+            }
+            Node::Coll { kind, items } => {
+                let k = match kind {
+                    crate::term::CollKind::List => "list",
+                    crate::term::CollKind::Tuple => "tuple",
+                    crate::term::CollKind::Map => "map",
+                };
+                self.head(p, k);
+                self.out.raw(",\"items\":[");
+                let mut seq = Vec::new();
+                commas(&mut seq, items.iter().map(|c| vec![Task::Proc(c.clone(), q + 1)]).collect());
+                seq.push(Task::Lit("]}"));
+                schedule(stack, seq);
+            }
         }
     }
 

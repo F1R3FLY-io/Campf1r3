@@ -74,6 +74,11 @@ pub trait Observer<C, P, A, K>: Send + Sync + 'static {
     fn observe_comm(&self, _k: &K, _k_persist: bool, _data: &[(&A, bool)]) -> Result<(), Abort> {
         Ok(())
     }
+    /// A send on a host-owned channel (an aperture): it never reaches the
+    /// store, but it is still work the caller may want to charge for.
+    fn observe_aperture(&self, _c: &C, _a: &A) -> Result<(), Abort> {
+        Ok(())
+    }
 }
 
 /// An observer that does nothing, for callers with no budget to keep.

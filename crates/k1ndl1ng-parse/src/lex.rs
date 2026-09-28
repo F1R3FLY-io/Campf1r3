@@ -30,6 +30,14 @@ pub enum Tok {
     LArrow,
     LEq,
     LPeek,
+    /// K1G: `[`, `]`, `:`, integer, string, `true`, `false`.
+    LBracket,
+    RBracket,
+    Colon,
+    Int,
+    Str,
+    True,
+    False,
     Unknown,
     Eof,
 }
@@ -70,8 +78,8 @@ const RESERVED: &[(&str, Tok)] = &[
     ("bundle0", Tok::Reserved),
     ("bundle+", Tok::Reserved),
     ("bundle-", Tok::Reserved),
-    ("true", Tok::Reserved),
-    ("false", Tok::Reserved),
+    ("true", Tok::True),
+    ("false", Tok::False),
     ("not", Tok::Reserved),
     ("and", Tok::Reserved),
     ("or", Tok::Reserved),
@@ -152,6 +160,60 @@ pub fn lex(src: &str) -> Lexed {
             b'@' => {
                 push!(Tok::At, i, i + 1);
                 i += 1;
+            }
+            b'[' => {
+                push!(Tok::LBracket, i, i + 1);
+                i += 1;
+            }
+            b']' => {
+                push!(Tok::RBracket, i, i + 1);
+                i += 1;
+            }
+            b':' => {
+                push!(Tok::Colon, i, i + 1);
+                i += 1;
+            }
+            b'0'..=b'9' => {
+                let lo = i;
+                let mut j = i;
+                while j < n && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                push!(Tok::Int, lo, j);
+                i = j;
+            }
+            b'-' if i + 1 < n && b[i + 1].is_ascii_digit() => {
+                let lo = i;
+                let mut j = i + 1;
+                while j < n && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                push!(Tok::Int, lo, j);
+                i = j;
+            }
+            b'"' => {
+                // The token spans the quotes; the parser decodes escapes.
+                let lo = i;
+                let mut j = i + 1;
+                let mut closed = false;
+                while j < n {
+                    if b[j] == b'\\' {
+                        j += 2;
+                        continue;
+                    }
+                    if b[j] == b'"' {
+                        j += 1;
+                        closed = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                let j = j.min(n);
+                if !closed {
+                    bad.push((Span::new(lo as u32, j as u32), "unterminated string"));
+                }
+                push!(Tok::Str, lo, j);
+                i = j;
             }
             b'*' => {
                 push!(Tok::Star, i, i + 1);

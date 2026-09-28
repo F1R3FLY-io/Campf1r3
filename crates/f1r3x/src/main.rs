@@ -207,6 +207,7 @@ fn line(s: &Step) -> String {
             cont.short()
         ),
         Step::Reissued { chan } => format!("reissue  {}", chan.short()),
+        Step::Outbound { aperture, chan } => format!("outbound {} on aperture {aperture}", chan.short()),
     }
 }
 
