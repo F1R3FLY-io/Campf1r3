@@ -58,6 +58,7 @@ enum R {
     MkEval,
     MkQuote,
     MkColl(crate::term::CollKind, u32),
+    MkCollRest(crate::term::CollKind, u32),
 }
 
 impl Norm {
@@ -199,6 +200,14 @@ fn rebuild(t: &Norm, xf: &Xf<'_>) -> Norm {
                         steps.push(R::P(c.clone(), d));
                     }
                 }
+                // Pattern-only; reached only if a pattern is ever rebuilt.
+                Node::CollRest { kind, items, rest } => {
+                    steps.push(R::MkCollRest(*kind, items.len() as u32));
+                    steps.push(R::P(rest.clone(), d));
+                    for c in items.iter().rev() {
+                        steps.push(R::P(c.clone(), d));
+                    }
+                }
                 Node::Receive { binds, body } => {
                     let k: u32 = binds.iter().map(|b| b.binders as u32).sum();
                     steps.push(R::MkReceive(binds.clone(), d));
@@ -251,6 +260,12 @@ fn rebuild(t: &Norm, xf: &Xf<'_>) -> Norm {
                 let at = procs.len() - n as usize;
                 let items = procs.split_off(at);
                 procs.push(Norm::coll(kind, items));
+            }
+            R::MkCollRest(kind, n) => {
+                let rest = procs.pop().expect("remainder");
+                let at = procs.len() - n as usize;
+                let items = procs.split_off(at);
+                procs.push(Norm::coll_rest(kind, items, rest));
             }
             R::MkEval => {
                 let n = names.pop().expect("eval operand");

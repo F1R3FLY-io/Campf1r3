@@ -32,6 +32,10 @@ pub const T_QUOTE: u8 = 0x10;
 pub const T_BOUND_NAME: u8 = 0x11;
 pub const T_FREE_NAME: u8 = 0x12;
 pub const T_UNFORGEABLE: u8 = 0x13;
+/// A list pattern with a remainder: tag, item count, items, remainder.
+pub const T_LIST_REST: u8 = 0x14;
+/// A map pattern with a remainder: tag, pair count, pairs, remainder.
+pub const T_MAP_REST: u8 = 0x15;
 pub const T_BIND: u8 = 0x20;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -157,6 +161,10 @@ pub enum Node {
     /// A ground collection (K1G). A map's items are `k0, v0, k1, v1, ...`,
     /// pairs ordered by the encoding of their keys.
     Coll { kind: CollKind, items: Vec<Norm> },
+    /// A list or map *pattern* with a remainder (`kind` is `List` or `Map`).
+    /// A map's pairs are ordered by key encoding, as in `Coll`. Matching
+    /// binds `rest` to the list suffix, or to the map less the named keys.
+    CollRest { kind: CollKind, items: Vec<Norm>, rest: Norm },
 }
 
 /// Ground leaves. No floats: every consumer needs bit-identical results.
@@ -224,6 +232,10 @@ fn take_children(node: &mut Node, out: &mut Vec<Norm>) {
         Node::New { body, .. } => out.push(body),
         Node::Eval(n) => push_name(n, out),
         Node::Coll { items, .. } => out.extend(items),
+        Node::CollRest { items, rest, .. } => {
+            out.extend(items);
+            out.push(rest);
+        }
         _ => {}
     }
 }
@@ -512,6 +524,35 @@ impl Norm {
         }
         Norm::coll_raw(kind, items)
     }
+    /// A list or map pattern with a remainder. Map pairs are put in key
+    /// order (coinciding keys resolved as in [`Norm::map`]). A `Tuple` kind is
+    /// treated as `List`: tuples have no remainder.
+    pub fn coll_rest(kind: CollKind, items: Vec<Norm>, rest: Norm) -> Norm {
+        let kind = if kind == CollKind::Map { CollKind::Map } else { CollKind::List };
+        let items = if kind == CollKind::Map {
+            let mut pairs = Vec::with_capacity(items.len() / 2);
+            let mut it = items.into_iter();
+            while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                pairs.push((k, v));
+            }
+            pairs.sort_by(|a, b| a.0.encode().cmp(b.0.encode()).then(a.1.encode().cmp(b.1.encode())));
+            pairs.dedup_by(|b, a| a.0.encode() == b.0.encode());
+            pairs.into_iter().flat_map(|(k, v)| [k, v]).collect()
+        } else {
+            items
+        };
+        let mut enc = vec![if kind == CollKind::Map { T_MAP_REST } else { T_LIST_REST }];
+        let n = if kind == CollKind::Map { items.len() / 2 } else { items.len() };
+        leb(n as u32, &mut enc);
+        let mut size = 1u32;
+        let mut depth = 0u32;
+        for a in items.iter().chain(std::iter::once(&rest)) {
+            enc.extend_from_slice(a.encode());
+            size = size.saturating_add(a.size());
+            depth = depth.max(a.depth());
+        }
+        Norm::make(Node::CollRest { kind, items, rest }, enc, size, depth + 1)
+    }
     fn coll_raw(kind: CollKind, items: Vec<Norm>) -> Norm {
         let mut enc = vec![coll_tag(kind)];
         let n = if kind == CollKind::Map { items.len() / 2 } else { items.len() };
@@ -555,6 +596,41 @@ impl Norm {
         match self.node() {
             Node::Coll { kind: k, items } if *k == kind => Some(items),
             _ => None,
+        }
+    }
+    /// Does this term contain a pattern hole (`_`, or a pattern variable)?
+    pub fn has_holes(&self) -> bool {
+        let mut procs = vec![self.clone()];
+        let mut names: Vec<Name> = Vec::new();
+        loop {
+            while let Some(n) = names.pop() {
+                match n {
+                    Name::Free(_) => return true,
+                    Name::Quote(q) => procs.push(q),
+                    _ => {}
+                }
+            }
+            let Some(p) = procs.pop() else { return false };
+            match p.node() {
+                Node::Wild | Node::FreeVar(_) => return true,
+                Node::Par(v) => procs.extend(v.iter().cloned()),
+                Node::Send { chan, args, .. } => {
+                    names.push(chan.clone());
+                    procs.extend(args.iter().cloned());
+                }
+                Node::Receive { binds, body } => {
+                    for b in binds {
+                        names.push(b.chan.clone());
+                        names.extend(b.pats.iter().cloned());
+                    }
+                    procs.push(body.clone());
+                }
+                Node::New { body, .. } => procs.push(body.clone()),
+                Node::Eval(n) => names.push(n.clone()),
+                Node::Coll { items, .. } => procs.extend(items.iter().cloned()),
+                Node::CollRest { .. } => return true,
+                _ => {}
+            }
         }
     }
     /// Look a string key up in a map.
@@ -698,6 +774,7 @@ enum Step {
     MkQuote,
     MkBind(BindKind, u32),
     MkColl(CollKind, u32),
+    MkCollRest(CollKind, u32),
 }
 
 const MAX_DECODE_DEPTH: usize = 1 << 20;
@@ -760,6 +837,10 @@ pub fn binder_count(pats: &[Name]) -> u16 {
             Node::New { body, .. } => procs.push(body.clone()),
             Node::Eval(n) => names.push(n.clone()),
             Node::Coll { items, .. } => procs.extend(items.iter().cloned()),
+            Node::CollRest { items, rest, .. } => {
+                procs.extend(items.iter().cloned());
+                procs.push(rest.clone());
+            }
             _ => {}
         }
     }
@@ -849,6 +930,16 @@ fn decode_at(r: &mut Reader<'_>) -> Result<Norm, DecodeError> {
                             steps.push(Step::Proc);
                         }
                     }
+                    T_LIST_REST | T_MAP_REST => {
+                        let kind = if tag == T_MAP_REST { CollKind::Map } else { CollKind::List };
+                        let n = r.leb()?;
+                        let m = if kind == CollKind::Map { n.checked_mul(2).ok_or(DecodeError::BadLeb)? } else { n };
+                        steps.push(Step::MkCollRest(kind, m));
+                        // Items, then the remainder, in stream order.
+                        for _ in 0..=m {
+                            steps.push(Step::Proc);
+                        }
+                    }
                     other => return Err(DecodeError::BadTag(other)),
                 }
             }
@@ -915,6 +1006,15 @@ fn decode_at(r: &mut Reader<'_>) -> Result<Norm, DecodeError> {
             Step::MkEval => {
                 let n = names.pop().ok_or(DecodeError::Truncated)?;
                 procs.push(Norm::eval(n));
+            }
+            Step::MkCollRest(kind, n) => {
+                let rest = procs.pop().ok_or(DecodeError::Truncated)?;
+                let at = procs
+                    .len()
+                    .checked_sub(n as usize)
+                    .ok_or(DecodeError::Truncated)?;
+                let items = procs.split_off(at);
+                procs.push(Norm::coll_rest(kind, items, rest));
             }
             Step::MkColl(kind, n) => {
                 let at = procs

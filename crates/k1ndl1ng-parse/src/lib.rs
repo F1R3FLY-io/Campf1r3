@@ -135,6 +135,8 @@ enum Frame {
     Group { closer: Closer, lo: u32 },
     /// A K1G collection being read. For a map, `items` alternate key, value.
     Coll { kind: CollKind, items: Vec<ProcId>, lo: u32 },
+    /// After `...`: the remainder pattern of a list or map is being read.
+    CollRest { kind: CollKind, items: Vec<ProcId>, lo: u32 },
     Quote { lo: u32 },
     Eval { lo: u32 },
     SendHead { lo: u32 },
@@ -303,6 +305,40 @@ impl<'a> Parser<'a> {
                 break;
             }
             match mode {
+                Mode::NeedProc if self.at(Tok::Ellipsis) => {
+                    // `[...r]`, `{...r}`, and `, ...r` after an item.
+                    let t = self.peek();
+                    self.bump();
+                    match stack.pop() {
+                        Some(Frame::Coll { kind, items, lo })
+                            if kind == CollKind::List || (kind == CollKind::Map && items.len() % 2 == 0) =>
+                        {
+                            stack.push(Frame::CollRest { kind, items, lo });
+                            mode = Mode::NeedProc;
+                        }
+                        Some(Frame::Group { closer: Closer::Brace, lo }) => {
+                            self.need_ground(Span::new(lo, t.hi));
+                            stack.push(Frame::CollRest {
+                                kind: CollKind::Map,
+                                items: Vec::new(),
+                                lo,
+                            });
+                            mode = Mode::NeedProc;
+                        }
+                        other => {
+                            if let Some(f) = other {
+                                stack.push(f);
+                            }
+                            self.err(
+                                t.span(),
+                                "remainder-place",
+                                "`...` can only end a list or map pattern (a tuple has a fixed arity)".to_string(),
+                            );
+                            let p = self.error_proc(t.span());
+                            mode = Mode::HaveProc(p);
+                        }
+                    }
+                }
                 Mode::NeedProc => {
                     stack.push(Frame::Par {
                         parts: Vec::new(),
@@ -738,6 +774,7 @@ impl<'a> Parser<'a> {
                         | Frame::Par { .. }
                         | Frame::Group { .. }
                         | Frame::Coll { .. }
+                        | Frame::CollRest { .. }
                         | Frame::SendArgs { .. }
                         | Frame::NewBody { .. }
                         | Frame::RecvBody { .. } => {
@@ -787,6 +824,20 @@ impl<'a> Parser<'a> {
                                 self.need_ground(Span::new(lo, self.prev_hi()));
                                 stack.push(Frame::Coll { kind: CollKind::Map, items: vec![p], lo });
                                 mode = Mode::NeedProc;
+                            } else if self.at(Tok::Ellipsis) {
+                                // `(a ...r)` or `{a ...r}`: a remainder where no
+                                // list or map is open. Report it, drop the `...`,
+                                // and read on to the closer.
+                                let t = self.peek();
+                                self.bump();
+                                let msg = if closer == Closer::Paren {
+                                    "a tuple has a fixed arity: `...` applies to lists and maps"
+                                } else {
+                                    "`...` in a map follows a complete `key: value` pair"
+                                };
+                                self.err(t.span(), "remainder-place", msg.to_string());
+                                stack.push(Frame::Group { closer, lo });
+                                mode = Mode::NeedProc;
                             } else {
                                 match closer {
                                     Closer::Paren => self.expect(Tok::RParen, "`)`"),
@@ -806,6 +857,15 @@ impl<'a> Parser<'a> {
                                 self.expect(Tok::Colon, "`:` after a map key");
                                 stack.push(Frame::Coll { kind, items, lo });
                                 mode = Mode::NeedProc;
+                            } else if self.at(Tok::Ellipsis) {
+                                // Rholang's form: `[a, b ...rest]`, `{"k": v ...rest}`.
+                                let t = self.peek();
+                                self.bump();
+                                if kind == CollKind::Tuple {
+                                    self.err(t.span(), "remainder-place", "a tuple has a fixed arity: `...` applies to lists and maps".to_string());
+                                }
+                                stack.push(Frame::CollRest { kind, items, lo });
+                                mode = Mode::NeedProc;
                             } else if self.at(Tok::Comma) {
                                 self.bump();
                                 stack.push(Frame::Coll { kind, items, lo });
@@ -817,6 +877,18 @@ impl<'a> Parser<'a> {
                                 let q = self.b.add_proc(ProcNode::Coll { kind, items: s }, Span::new(lo, hi));
                                 mode = Mode::HaveProc(q);
                             }
+                        }
+                        Frame::CollRest { kind, items, lo } => {
+                            let (close, what) = match kind {
+                                CollKind::Map => (Tok::RBrace, "`}` after the remainder of a map pattern"),
+                                _ => (Tok::RBracket, "`]` after the remainder of a list pattern"),
+                            };
+                            self.expect(close, what);
+                            let s = self.b.proc_slice(&items);
+                            let hi = self.prev_hi();
+                            let kind = if kind == CollKind::Tuple { CollKind::List } else { kind };
+                            let q = self.b.add_proc(ProcNode::CollRest { kind, items: s, rest: p }, Span::new(lo, hi));
+                            mode = Mode::HaveProc(q);
                         }
                         Frame::Quote { lo } => {
                             let hi = self.prev_hi();

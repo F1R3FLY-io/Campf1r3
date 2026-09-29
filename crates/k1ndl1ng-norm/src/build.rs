@@ -93,6 +93,7 @@ enum J {
     RecvMid { nbinds: u32, body: ProcId },
     RecvFinish(u32),
     MkColl(CollKind, u32, Span),
+    MkCollRest(CollKind, u32, Span),
 }
 
 struct Norms<'a> {
@@ -212,6 +213,25 @@ enum Resolved {
 }
 
 /// Normalise a well-formed tree.
+/// Map keys, in a literal or a pattern: no duplicates, and no holes. A key
+/// with a hole would make matching depend on the order pairs happen to be
+/// stored in, and could match more than one way; a key may still mention a
+/// variable bound outside the pattern.
+fn check_map_keys(st: &mut Norms<'_>, items: &[Norm], span: Span) {
+    let mut keys: Vec<&[u8]> = items.iter().step_by(2).map(|k| k.encode()).collect();
+    keys.sort();
+    if keys.windows(2).any(|w| w[0] == w[1]) {
+        st.err(span, "duplicate-key", "a map literal names the same key twice".to_string());
+    }
+    if items.iter().step_by(2).any(Norm::has_holes) {
+        st.err(
+            span,
+            "map-key-pattern",
+            "a map pattern's keys must be ground: `_` and pattern variables may appear only in values".to_string(),
+        );
+    }
+}
+
 pub fn normalise(tree: &Ast, opts: &Options) -> Result<Normalised, Vec<Diag>> {
     if let Err(e) = tree.check() {
         return Err(vec![Diag {
@@ -255,6 +275,21 @@ pub fn normalise(tree: &Ast, opts: &Options) -> Result<Normalised, Vec<Diag>> {
                     ProcNode::Coll { kind, items } => {
                         let kids = tree.procs_of(items);
                         jobs.push(J::MkColl(kind, kids.len() as u32, span));
+                        for k in kids.iter().rev() {
+                            jobs.push(J::P(*k, ctx));
+                        }
+                    }
+                    ProcNode::CollRest { kind, items, rest } => {
+                        if ctx == Ctx::Normal {
+                            st.err(
+                                span,
+                                "remainder-outside-pattern",
+                                "`...` may only appear in a pattern".to_string(),
+                            );
+                        }
+                        let kids = tree.procs_of(items);
+                        jobs.push(J::MkCollRest(kind, kids.len() as u32, span));
+                        jobs.push(J::P(rest, ctx));
                         for k in kids.iter().rev() {
                             jobs.push(J::P(*k, ctx));
                         }
@@ -376,13 +411,18 @@ pub fn normalise(tree: &Ast, opts: &Options) -> Result<Normalised, Vec<Diag>> {
                 let at = st.procs.len() - n as usize;
                 let items = st.procs.split_off(at);
                 if kind == CollKind::Map {
-                    let mut keys: Vec<&[u8]> = items.iter().step_by(2).map(|k| k.encode()).collect();
-                    keys.sort();
-                    if keys.windows(2).any(|w| w[0] == w[1]) {
-                        st.err(span, "duplicate-key", "a map literal names the same key twice".to_string());
-                    }
+                    check_map_keys(&mut st, &items, span);
                 }
                 st.procs.push(Norm::coll(kind, items));
+            }
+            J::MkCollRest(kind, n, span) => {
+                let rest = st.procs.pop().expect("remainder");
+                let at = st.procs.len() - n as usize;
+                let items = st.procs.split_off(at);
+                if kind == CollKind::Map {
+                    check_map_keys(&mut st, &items, span);
+                }
+                st.procs.push(Norm::coll_rest(kind, items, rest));
             }
             J::MkEval(span) => {
                 let n = st.names.pop().expect("eval operand");
@@ -571,6 +611,12 @@ pub fn free_levels_in_order(t: &Norm) -> Vec<u32> {
                 Node::New { body, .. } => stack.push(W::P(body.clone())),
                 Node::Eval(n) => stack.push(W::N(n.clone())),
                 Node::Coll { items, .. } => {
+                    for c in items.iter().rev() {
+                        stack.push(W::P(c.clone()));
+                    }
+                }
+                Node::CollRest { items, rest, .. } => {
+                    stack.push(W::P(rest.clone()));
                     for c in items.iter().rev() {
                         stack.push(W::P(c.clone()));
                     }

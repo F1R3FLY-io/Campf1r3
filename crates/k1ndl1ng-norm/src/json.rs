@@ -398,6 +398,17 @@ impl Walk<'_> {
                 seq.push(Task::Lit("]}"));
                 schedule(stack, seq);
             }
+            Node::CollRest { kind, items, rest } => {
+                let k = if *kind == crate::term::CollKind::Map { "map-rest" } else { "list-rest" };
+                self.head(p, k);
+                self.out.raw(",\"items\":[");
+                let mut seq = Vec::new();
+                commas(&mut seq, items.iter().map(|c| vec![Task::Proc(c.clone(), q + 1)]).collect());
+                seq.push(Task::Lit("],\"rest\":"));
+                seq.push(Task::Proc(rest.clone(), q + 1));
+                seq.push(Task::Lit("}"));
+                schedule(stack, seq);
+            }
         }
     }
 

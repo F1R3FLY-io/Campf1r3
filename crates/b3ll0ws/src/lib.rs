@@ -459,7 +459,8 @@ impl<B: Backend, M: NameMinter, O: Observer<Chan, BindPat, Data, Cont>> Machine<
             | Node::FreeVar(_)
             | Node::Wild
             | Node::Lit(_)
-            | Node::Coll { .. } => {
+            | Node::Coll { .. }
+            | Node::CollRest { .. } => {
                 out.push(Step::Inert {
                     term: job.term.hash(),
                 })

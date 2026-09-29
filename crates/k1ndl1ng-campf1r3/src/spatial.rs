@@ -23,7 +23,7 @@
 //! The machine is iterative — an explicit goal stack, a trail of bindings, and
 //! a stack of choice frames — because pattern depth is user input.
 
-use k1ndl1ng_norm::{Name, NBind, Node, Norm, Val};
+use k1ndl1ng_norm::{CollKind, Name, NBind, Node, Norm, Val};
 
 /// The widest `|` search this matcher will attempt: hole-bearing pattern
 /// components, and target components left after the ground ones are removed.
@@ -169,9 +169,34 @@ fn step(
             Node::Nil => tgt.is_nil(),
             Node::BoundVar(_) => pat.encode() == tgt.encode(),
             Node::Lit(_) => pat.encode() == tgt.encode(),
-            // K1G collections match elementwise, same sort and same length.
-            // Map patterns are paired in stored (key-encoding) order, so a hole
-            // in a map *key* can misalign pairs; keys should be ground in v1.
+            // A map pattern matches by key: each pattern key (ground; the
+            // normaliser rejects holes in keys) is looked up in the target, so
+            // the result never depends on stored order. Without a remainder
+            // the key sets must be equal.
+            Node::Coll { kind: CollKind::Map, items } => match tgt.node() {
+                Node::Coll { kind: CollKind::Map, items: ti } if ti.len() == items.len() => {
+                    match_map(items, ti, None, goals)
+                }
+                _ => false,
+            },
+            // `{k: p, ... ...R}`: the named keys, and `R` against the map of
+            // the others (a map in normal form: removing pairs keeps order).
+            Node::CollRest { kind: CollKind::Map, items, rest } => match tgt.node() {
+                Node::Coll { kind: CollKind::Map, items: ti } => match_map(items, ti, Some(rest), goals),
+                _ => false,
+            },
+            // `[p1, ..., pn ...R]`: a prefix, and `R` against the suffix.
+            Node::CollRest { items, rest, .. } => match tgt.node() {
+                Node::Coll { kind: CollKind::List, items: ti } if ti.len() >= items.len() => {
+                    for (a, t) in items.iter().zip(ti.iter()) {
+                        goals.push(Goal::P(a.clone(), t.clone()));
+                    }
+                    goals.push(Goal::P(rest.clone(), Norm::list(ti[items.len()..].to_vec())));
+                    true
+                }
+                _ => false,
+            },
+            // Lists and tuples match elementwise, same sort and same length.
             Node::Coll { kind, items } => match tgt.node() {
                 Node::Coll { kind: tk, items: ti } if tk == kind && ti.len() == items.len() => {
                     for (a, t) in items.iter().zip(ti.iter()) {
@@ -372,8 +397,54 @@ fn bind_shapes_agree(p: &NBind, t: &NBind) -> bool {
             .all(|(a, b)| a.encode() == b.encode())
 }
 
+/// Match map pattern pairs `pat` against a target map's pairs `tgt` (both
+/// `k0, v0, k1, v1, ...`, the target ordered by key encoding). Each pattern key
+/// is found by binary search on its encoding: `O(n log m)`. With `rest`, the
+/// unnamed pairs become a map for `rest` to match; without, every target key
+/// must have been named.
+fn match_map(pat: &[Norm], tgt: &[Norm], rest: Option<&Norm>, goals: &mut Vec<Goal>) -> bool {
+    let m = tgt.len() / 2;
+    let mut used = vec![false; m];
+    for kv in pat.chunks(2) {
+        let key = kv[0].encode();
+        let (mut lo, mut hi) = (0usize, m);
+        let mut found = None;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            match tgt[2 * mid].encode().cmp(key) {
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+                std::cmp::Ordering::Equal => {
+                    found = Some(mid);
+                    break;
+                }
+            }
+        }
+        let Some(i) = found else { return false };
+        if used[i] {
+            return false;
+        }
+        used[i] = true;
+        goals.push(Goal::P(kv[1].clone(), tgt[2 * i + 1].clone()));
+    }
+    match rest {
+        None => used.iter().all(|u| *u),
+        Some(r) => {
+            let mut others = Vec::with_capacity(tgt.len() - pat.len());
+            for (i, kv) in tgt.chunks(2).enumerate() {
+                if !used[i] {
+                    others.push((kv[0].clone(), kv[1].clone()));
+                }
+            }
+            goals.push(Goal::P(r.clone(), Norm::map(others)));
+            true
+        }
+    }
+}
+
 /// Does this term contain a hole? Iterative, and the answer is cheap because
-/// most pattern subterms are small.
+/// most pattern subterms are small. A remainder always counts: even
+/// `{"a": 1 ...{}}` must be matched structurally, never by encoding.
 pub fn has_holes(p: &Norm) -> bool {
     let mut procs = vec![p.clone()];
     let mut names: Vec<Name> = Vec::new();
@@ -394,6 +465,7 @@ pub fn has_holes(p: &Norm) -> bool {
             Node::Nil | Node::BoundVar(_) | Node::Lit(_) => {}
             Node::Par(v) => procs.extend(v.iter().cloned()),
             Node::Coll { items, .. } => procs.extend(items.iter().cloned()),
+            Node::CollRest { .. } => return true,
             Node::Send { chan, args, .. } => {
                 names.push(chan.clone());
                 procs.extend(args.iter().cloned());

@@ -90,6 +90,23 @@ pub fn print_proc(ast: &Ast, root: ProcId, style: Style) -> String {
                     jobs.reverse();
                     stack.extend(jobs);
                 }
+                ProcNode::CollRest { kind, items, rest } => {
+                    let kids = ast.procs_of(items).to_vec();
+                    let (open, close) = if kind == crate::CollKind::Map { ("{", "}") } else { ("[", "]") };
+                    let mut jobs = vec![Job::Text(open)];
+                    for (i, k) in kids.iter().enumerate() {
+                        if i > 0 {
+                            let sep = if kind == crate::CollKind::Map && i % 2 == 1 { ": " } else { ", " };
+                            jobs.push(Job::Text(sep));
+                        }
+                        jobs.push(Job::Proc(*k, depth));
+                    }
+                    jobs.push(Job::Text(if kids.is_empty() { "..." } else { " ..." }));
+                    jobs.push(Job::Proc(rest, depth));
+                    jobs.push(Job::Text(close));
+                    jobs.reverse();
+                    stack.extend(jobs);
+                }
                 ProcNode::Wild => out.push('_'),
                 ProcNode::Var { id } => out.push_str(ast.text(id)),
                 ProcNode::Error { .. } => out.push_str("<error>"),

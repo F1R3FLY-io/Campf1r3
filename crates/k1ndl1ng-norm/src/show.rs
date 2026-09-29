@@ -51,6 +51,10 @@ pub fn slot_sorts(pats: &[Name], binders: u16) -> Vec<Sort> {
             Node::New { body, .. } => procs.push(body.clone()),
             Node::Eval(n) => names.push(n.clone()),
             Node::Coll { items, .. } => procs.extend(items.iter().cloned()),
+            Node::CollRest { items, rest, .. } => {
+                procs.extend(items.iter().cloned());
+                procs.push(rest.clone());
+            }
             _ => {}
         }
     }
@@ -65,6 +69,7 @@ enum U {
     MkEval,
     MkQuote,
     MkColl(crate::term::CollKind, u32),
+    MkCollRest(crate::term::CollKind, u32),
     MkNew(u32),
     MkRecv(u32, u32),
     MkBind(BindKind, u32),
@@ -117,6 +122,13 @@ pub fn unnormalise(t: &Norm) -> Ast {
                 }
                 Node::Coll { kind, items } => {
                     jobs.push(U::MkColl(*kind, items.len() as u32));
+                    for c in items.iter().rev() {
+                        jobs.push(U::P(c.clone()));
+                    }
+                }
+                Node::CollRest { kind, items, rest } => {
+                    jobs.push(U::MkCollRest(*kind, items.len() as u32));
+                    jobs.push(U::P(rest.clone()));
                     for c in items.iter().rev() {
                         jobs.push(U::P(c.clone()));
                     }
@@ -229,6 +241,13 @@ pub fn unnormalise(t: &Norm) -> Ast {
                 let at = procs.len() - n as usize;
                 let items = procs.split_off(at);
                 let x = b.coll(kind, &items);
+                procs.push(x);
+            }
+            U::MkCollRest(kind, n) => {
+                let rest = procs.pop().expect("remainder");
+                let at = procs.len() - n as usize;
+                let items = procs.split_off(at);
+                let x = b.coll_rest(kind, &items, rest);
                 procs.push(x);
             }
             U::MkEval => {

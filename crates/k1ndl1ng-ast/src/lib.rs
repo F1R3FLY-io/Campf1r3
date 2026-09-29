@@ -119,6 +119,13 @@ pub enum ProcNode {
         kind: CollKind,
         items: Slice,
     },
+    /// A list or map *pattern* with a remainder: `[a, b ...rest]`,
+    /// `{"k": v ...rest}`. Pattern position only; never a tuple.
+    CollRest {
+        kind: CollKind,
+        items: Slice,
+        rest: ProcId,
+    },
 }
 
 /// The three K1G collection sorts.
@@ -283,6 +290,12 @@ impl Ast {
                 ProcNode::Nil | ProcNode::Wild | ProcNode::Var { .. } => {}
                 ProcNode::Bool { .. } | ProcNode::Int { .. } | ProcNode::Str { .. } | ProcNode::Bytes { .. } => {}
                 ProcNode::Coll { items, .. } => self.check_proc_slice(items, np)?,
+                ProcNode::CollRest { items, rest, .. } => {
+                    self.check_proc_slice(items, np)?;
+                    if rest.0 >= np {
+                        return Err(WfError::IndexOutOfRange("proc", rest.0));
+                    }
+                }
                 ProcNode::Error { .. } => return Err(WfError::ErrorNode(ProcId(i as u32))),
                 ProcNode::Par(s) => {
                     if s.len < 2 {
@@ -374,6 +387,10 @@ impl Ast {
             match self.procs[p.ix()] {
                 ProcNode::Par(s) => stack.extend_from_slice(self.procs_of(s)),
                 ProcNode::Coll { items, .. } => stack.extend_from_slice(self.procs_of(items)),
+                ProcNode::CollRest { items, rest, .. } => {
+                    stack.extend_from_slice(self.procs_of(items));
+                    stack.push(rest);
+                }
                 ProcNode::Send { chan, args, .. } => {
                     push_name(chan, &mut stack, &mut seen_n);
                     stack.extend_from_slice(self.procs_of(args));
@@ -440,6 +457,12 @@ impl Ast {
                     for (i, c) in self.procs_of(items).iter().enumerate() {
                         stack.push((*c, mix(h, 0x400 + i as u64)));
                     }
+                }
+                ProcNode::CollRest { items, rest, .. } => {
+                    for (i, c) in self.procs_of(items).iter().enumerate() {
+                        stack.push((*c, mix(h, 0x400 + i as u64)));
+                    }
+                    stack.push((rest, mix(h, 0x500)));
                 }
                 _ => {}
             }
@@ -595,6 +618,11 @@ impl Builder {
     pub fn coll(&mut self, kind: CollKind, items: &[ProcId]) -> ProcId {
         let s = self.proc_slice(items);
         self.add_proc(ProcNode::Coll { kind, items: s }, Span::NULL)
+    }
+    /// A list or map pattern with a remainder (`kind` is `List` or `Map`).
+    pub fn coll_rest(&mut self, kind: CollKind, items: &[ProcId], rest: ProcId) -> ProcId {
+        let s = self.proc_slice(items);
+        self.add_proc(ProcNode::CollRest { kind, items: s, rest }, Span::NULL)
     }
     pub fn eval(&mut self, name: NameId) -> ProcId {
         self.add_proc(ProcNode::Eval { name }, Span::NULL)

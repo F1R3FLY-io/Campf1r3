@@ -38,6 +38,8 @@ pub enum Tok {
     Str,
     True,
     False,
+    /// `...`, the remainder of a list or map pattern.
+    Ellipsis,
     Unknown,
     Eof,
 }
@@ -172,6 +174,10 @@ pub fn lex(src: &str) -> Lexed {
             b':' => {
                 push!(Tok::Colon, i, i + 1);
                 i += 1;
+            }
+            b'.' if i + 2 < n && b[i + 1] == b'.' && b[i + 2] == b'.' => {
+                push!(Tok::Ellipsis, i, i + 3);
+                i += 3;
             }
             b'0'..=b'9' => {
                 let lo = i;
