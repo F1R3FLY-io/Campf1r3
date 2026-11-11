@@ -1,0 +1,18 @@
+[package]
+name = "rhoviz"
+description = "Render a rho term as a coloured 3D figure and animate its reduction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rhoviz"
+path = "src/main.rs"
+
+[dependencies]
+k1ndl1ng-norm = { path = "../k1ndl1ng-norm" }
+campf1r3-core = { path = "../campf1r3-core" }
+k1ndl1ng-campf1r3 = { path = "../k1ndl1ng-campf1r3" }
+b3ll0ws = { path = "../b3ll0ws" }
+f1r3x = { path = "../f1r3x" }

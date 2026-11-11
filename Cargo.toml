@@ -12,6 +12,7 @@ members = [
   "crates/f1r3x-ffi",
   "crates/f1r3x-wasm",
   "crates/f1r3x-serve",
+  "crates/rhoviz",
 ]
 
 [workspace.package]
